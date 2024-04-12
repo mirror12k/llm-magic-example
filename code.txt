@@ -1,0 +1,27 @@
+
+memory:
+	a: "whoami"
+	b: "what?"
+	d: 99
+code:
+	app a, b
+	app a, b
+	app b, a
+
+	loop
+		set c, ""
+		app c, d
+		app c, " bottles of ink on the wall!"
+		print c
+		set c, ""
+		app c, d
+		app c, " bottles of ink!"
+		print c
+
+		print "you take one down,"
+		print "you pass it around,"
+
+		dec d
+	endloopif d > 0
+
+

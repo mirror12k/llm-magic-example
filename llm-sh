@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+import socket
+import ssl
+import sys
+
+import boto3
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.prompts import SystemMessagePromptTemplate, ChatPromptTemplate
+from langchain_community.chat_models import BedrockChat
+
+
+
+system_message_prompt = SystemMessagePromptTemplate.from_template("""
+You are an shell client program. Write the correct python code to execute the user's command.
+Always respond with well-formed JSON.
+""")
+
+http_client_template = ChatPromptTemplate.from_template("""Given the user's shell command:
+<user-command>
+{{user_command}}
+</user-command>
+
+Translate this shell command to a python script that can be executed to implement the same functionality.
+Do not use `subprocess` to simply execute the command.
+
+Format your response as a JSON structure of the form:
+{
+    "reasoning": "The user requested ... So I will write the python code as ...",
+    "python_code": "..."
+}
+""", template_format="jinja2")
+
+
+shell_client_prompt = ChatPromptTemplate.from_messages([system_message_prompt, http_client_template])
+bedrock_runtime = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
+model = BedrockChat(client=bedrock_runtime, model_id="anthropic.claude-3-sonnet-20240229-v1:0", model_kwargs={ 
+		"max_tokens": 4096,
+		"temperature": 0.5,
+		"top_k": 250,
+		"top_p": 1,
+		"stop_sequences": ["\n\nHuman"],
+	})
+json_output_parser = JsonOutputParser()
+shell_client_chain = shell_client_prompt | model | json_output_parser
+
+def call_langchain(user_command):
+	data = shell_client_chain.invoke({'user_command':user_command})
+	print(data)
+	return data['python_code']
+
+
+
+
+# # Define the host and the port for connection
+# HOST = 'www.example.org'
+# PORT = 443
+
+# Create a socket and wrap it with SSL
+context = ssl.create_default_context()
+
+args = " ".join(sys.argv[1:])
+# print(f'args: {" ".join(sys.argv[1:])}')
+
+code = call_langchain(f'{args}')
+
+print(f"resulting code:\n---------\n {code}\n---------\n")
+
+exec(code)
+
+# print(f'connecting to {host} : {port}, with message:\n{http_request}')
+
+# with socket.create_connection((host, port)) as sock:
+# 	with context.wrap_socket(sock, server_hostname=host) as ssock:
+# 		# Send an HTTP GET request
+# 		# request = 'GET / HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n'.format(HOST)
+# 		ssock.send(http_request.encode())
+
+# 		# Receive the response and print it out
+# 		response = ssock.recv(4096)
+# 		while response:
+# 			print(response.decode('utf-8'), end='')
+# 			response = ssock.recv(4096)

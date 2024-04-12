@@ -1,0 +1,4 @@
+#!/bin/bash
+set -e
+docker build -t "llm-magic" docker
+docker run -it --rm -v "$PWD:/app" -v "$PWD/docker:/app/docker:ro" --env-file="docker/.env" --name running-llm-magic "llm-magic"

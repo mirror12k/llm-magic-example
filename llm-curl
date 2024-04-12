@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+import socket
+import ssl
+import sys
+
+import boto3
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.prompts import SystemMessagePromptTemplate, ChatPromptTemplate
+from langchain_community.chat_models import BedrockChat
+
+
+
+system_message_prompt = SystemMessagePromptTemplate.from_template("""
+You are an HTTP client program. Respond with the valid and correct HTTP message to continue the task at hand.
+Make sure to include carriage returns and linefeeds at the end of your messages.
+""")
+
+http_client_template = ChatPromptTemplate.from_template("""Given the user's curl request as:
+<curl-request>
+{{curl_request}}
+</curl-request>
+
+Your task is to write the correct HTTP request message to execute the user's request.
+If the request doesn't specify a port, use 80 for http connections, and 443 for https connections.
+
+Format your response as a JSON structure of the form:
+{
+    "protocol":"http" or "https",
+    "host":"...",
+    "port":"...",
+    "http_request_message":"GET / HTTP/1.1\r\nHost: ..."
+}
+""", template_format="jinja2")
+
+
+http_client_prompt = ChatPromptTemplate.from_messages([system_message_prompt, http_client_template])
+bedrock_runtime = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
+model = BedrockChat(client=bedrock_runtime, model_id="anthropic.claude-3-sonnet-20240229-v1:0", model_kwargs={ 
+		"max_tokens": 4096,
+		"temperature": 0.2,
+		"top_k": 250,
+		"top_p": 1,
+		"stop_sequences": ["\n\nHuman"],
+	})
+json_output_parser = JsonOutputParser()
+http_client_chain = http_client_prompt | model | json_output_parser
+
+def call_langchain(curl_request):
+	data = http_client_chain.invoke({'curl_request':curl_request})
+	print(data)
+	return data['protocol'], data['host'], data['port'], data['http_request_message']
+
+
+
+
+# Create a socket and wrap it with SSL
+context = ssl.create_default_context()
+
+args = " ".join(sys.argv[1:])
+
+protocol, host, port, http_request = call_langchain(f'curl {args}')
+
+print(f'connecting to {protocol}: {host} : {port}, with message:\n{http_request}')
+
+with socket.create_connection((host, port)) as sock:
+	# upgrade our socket if the server is https
+	if protocol == 'https':
+		sock = context.wrap_socket(sock, server_hostname=host)
+
+	# Send an HTTP request
+	sock.send(http_request.encode())
+
+	# Receive the response and print it out
+	sock.settimeout(2)  # Set a timeout for non-blocking receive
+	response = sock.recv(4096)
+	while response:
+		print(response.decode('utf-8'), end='')
+		response = sock.recv(4096)

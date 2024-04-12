@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+import socket
+import ssl
+import sys
+
+import boto3
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.prompts import SystemMessagePromptTemplate, ChatPromptTemplate
+from langchain_community.chat_models import BedrockChat
+
+
+
+system_message_prompt = SystemMessagePromptTemplate.from_template("""
+You are a code translation assistant. Write the semantically correct python code to represent the code.
+Translate this target code to a python script that follows the language specification.
+If the target code is invalid based on the specification, set python_code to null and specify the reason in the error_message.
+Do not ignore invalid code, instead set an error_message.
+Always respond with well-formed JSON containing the translated code.
+""")
+
+translator_client_template = ChatPromptTemplate.from_template("""Given the language specification:
+<language-specification>
+{{language_specification}}
+</language-specification>
+
+Given the code to translate:
+<target-code>
+{{target_code}}
+</target-code>
+
+Format your response as a JSON structure of the form:
+{
+    "reasoning": "The user requested ... So I will write the python code as ...",
+    "error_message": "...", // specify if the code is invalid
+    "python_code": "..."
+}
+""", template_format="jinja2")
+
+
+translator_client_prompt = ChatPromptTemplate.from_messages([system_message_prompt, translator_client_template])
+bedrock_runtime = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
+model = BedrockChat(client=bedrock_runtime, model_id="anthropic.claude-3-sonnet-20240229-v1:0", model_kwargs={ 
+		"max_tokens": 4096,
+		"temperature": 0.5,
+		"top_k": 250,
+		"top_p": 1,
+		"stop_sequences": ["\n\nHuman"],
+	})
+json_output_parser = JsonOutputParser()
+translator_client_chain = translator_client_prompt | model | json_output_parser
+
+def call_langchain(language_specification, target_code):
+	data = translator_client_chain.invoke({ 'language_specification': language_specification, 'target_code': target_code })
+	print(data)
+	return data['python_code']
+
+
+
+
+# Create a socket and wrap it with SSL
+context = ssl.create_default_context()
+
+# args = " ".join(sys.argv[1:])
+# print(f'args: {" ".join(sys.argv[1:])}')
+
+with open(sys.argv[1], 'r') as f:
+	target_code = f.read()
+
+language_specification = '''
+# ReArc Language Spec 0.1
+ReArc programs are parsed in assembly format, e.g.:
+```
+memory:
+	a: 5
+	b: 20
+	c: "hello world!"
+code:
+	inc a
+	dec a
+	add a, b
+	app c, "yes"
+```
+must compile to the following python code:
+```py
+a = 5
+b = 20
+c = "hello world!"
+
+a += 1
+a -= 1
+a += b
+c += "yes"
+```
+
+loops and branches should be written as such, e.g.:
+```
+code:
+	loop
+		dec a
+	endloopif a
+
+	branch a
+		print "a was true-ish"
+	endbranch
+```
+must compile to the following python code:
+```py
+condition_1 = False
+while not condition_1:
+	a -= 1
+	condition_1 = a
+
+if a:
+	print("a was true-ish")
+```
+
+## Special instructions:
+`open $5, c, r` opens the file from the filepath, in read mode, and stores it in filehandle 5.
+`read a, $8` reads text from filehandle 8 into the variable a.
+'''
+
+code = call_langchain(language_specification, target_code)
+
+print(f"resulting code:\n---------\n{code}\n---------\n")
+
+exec(code)
+
+
+

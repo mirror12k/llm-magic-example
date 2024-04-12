@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+import os
+import sys
+
+import boto3
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.prompts import SystemMessagePromptTemplate, ChatPromptTemplate
+# from langchain_openai import ChatOpenAI
+# from langchain_community.llms import Bedrock
+from langchain_community.chat_models import BedrockChat
+
+import socket
+# import requests
+import json
+
+bedrock_runtime = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
+
+system_message_prompt = SystemMessagePromptTemplate.from_template("""
+You are an IRC client program. Respond with the valid and correct IRC commands to continue the task at hand. Make sure to include carriage returns and linefeeds at the end of your messages.
+""")
+
+irc_client_template = ChatPromptTemplate.from_template("""Given the previous IRC communication:
+<irc-messages>
+{{irc_messages}}
+</irc-messages>
+
+Your task is to successfully connect to the irc server.
+
+Format your response as a JSON structure of the form:
+{
+    "irc_client_response":"..."
+}
+""", template_format="jinja2")
+
+
+irc_client_prompt = ChatPromptTemplate.from_messages([system_message_prompt, irc_client_template])
+# model = ChatOpenAI(temperature=0.5, model="gpt-4-1106-preview", openai_api_key=os.environ['CHATGPT_API_KEY'])
+# model = Bedrock(model_id="anthropic.claude-3-sonnet-20240229-v1:0")
+model_kwargs =  { 
+    "max_tokens": 2048,
+    "temperature": 0.0,
+    "top_k": 250,
+    "top_p": 1,
+    "stop_sequences": ["\n\nHuman"],
+}
+model = BedrockChat(client=bedrock_runtime, model_id="anthropic.claude-3-sonnet-20240229-v1:0", model_kwargs=model_kwargs)
+json_output_parser = JsonOutputParser()
+
+
+irc_client_chain = irc_client_prompt | model | json_output_parser
+
+# # # Replace with the actual Langchain API endpoint and your API key
+# # LANGCHAIN_API_ENDPOINT = "https://api.langchain.ai/your-endpoint"
+# # LANGCHAIN_API_KEY = "your-langchain-api-key"
+
+def call_langchain(message):
+	data = irc_client_chain.invoke({'irc_messages':message})
+	print(data)
+	return data['irc_client_response']
+
+# call_langchain("hello world!")
+
+def receive_all_data(sock):
+	# Helper function to receive all data from the socket
+	buffer = b''
+	sock.settimeout(5)  # Set a timeout for non-blocking receive
+	
+	while True:
+		try:
+			data = sock.recv(4096)
+			if data:
+				buffer += data
+			else:
+				# No more data available
+				break
+		except socket.timeout:
+			# No more data available
+			break
+		except Exception as e:
+			# Handle different exceptions such as connection errors
+			print(f"Socket error: {e}")
+			break
+	
+	# Reset timeout to None (blocking mode)
+	sock.settimeout(None)
+	return buffer.decode()
+
+def main():
+	# Create a TCP/IP socket
+	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+	# Connect the socket to the server
+	server_address = ('localhost', 6667)
+	print(f"Connecting to {server_address[0]} port {server_address[1]}")
+	sock.connect(server_address)
+	
+	try:
+		# Receive messages from the server
+		history = ''
+		while True:
+			data = receive_all_data(sock)
+			history += data
+			if data:
+				print(f"Received: {data}")
+				
+				# Send the received message to Langchain and get a response
+				response = call_langchain(history)
+				if response:
+					print(f"Langchain response: {response}")
+					
+					# Send the response back to the server
+					sock.sendall(response.encode())
+					history += response
+				else:
+					print("No response from Langchain, skipping sending to server.")
+			else:
+				print("No data received, ending connection.")
+				break
+			
+	finally:
+		print("Closing socket")
+		sock.close()
+
+if __name__ == "__main__":
+	main()
+
